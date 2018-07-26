@@ -62,6 +62,7 @@ module Vm = struct
     pci_emulations: string list;
     pci_passthrough: bool;
     boot_order: string;
+    firmware: string option;
     qemu_disk_cmdline: bool;
     qemu_stubdom: bool;
   }
