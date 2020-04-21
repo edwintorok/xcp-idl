@@ -29,7 +29,7 @@ let mutex_execute m f =
 module D = Debug.Make(struct let name = "scheduler" end)
 open D
 
-module Int64Map = Map.Make(struct type t = int64 let compare = Int64.compare end)
+module SpanMap = Map.Make(Mtime.Span)
 
 module Delay = struct
   (* Concrete type is the ends of a pipe *)
@@ -102,10 +102,10 @@ type item = {
   fn: unit -> unit
 }
 
-type handle = int64 * int [@@deriving rpc]
+type handle = Mtime.span * int
 
 type t = {
-  mutable schedule : item list Int64Map.t;
+  mutable schedule : item list SpanMap.t;
   mutable shutdown : bool;
   delay : Delay.t;
   mutable next_id : int;
@@ -118,7 +118,7 @@ type time =
 
 (*type t = int64 * int [@@deriving rpc]*)
 
-let now () = Unix.gettimeofday () |> ceil |> Int64.of_float
+let now () = Mtime_clock.elapsed ()
 
 module Dump = struct
   type u = {
@@ -130,18 +130,22 @@ module Dump = struct
     let now = now () in
     mutex_execute s.m
       (fun () ->
-         Int64Map.fold (fun time xs acc -> List.map (fun i -> { time = Int64.sub time now; thing = i.name }) xs @ acc) s.schedule []
+         let time_of_span span = span |> Mtime.Span.to_s |> ceil |> Int64.of_float in
+         SpanMap.fold (fun time xs acc -> List.map (fun i -> { time = Mtime.Span.abs_diff time now |> time_of_span; thing = i.name }) xs @ acc) s.schedule []
       )
 end
 
 let one_shot s time (name: string) f =
   let time = match time with
-    | Delta x -> Int64.(add (of_int x) (now ())) in
+    | Delta x ->
+      let dt = Mtime.(float x *.Mtime.s_to_ns |> Int64.of_float |> Span.of_uint64_ns) in
+      Mtime.Span.add (now ()) dt
+  in
   let id = mutex_execute s.m
       (fun () ->
          let existing =
            try
-             Int64Map.find time s.schedule
+             SpanMap.find time s.schedule
            with _ -> []
          in
          let id = s.next_id in
@@ -151,7 +155,7 @@ let one_shot s time (name: string) f =
            name = name;
            fn = f
          } in
-         s.schedule <- Int64Map.add time (item :: existing) s.schedule;
+         s.schedule <- SpanMap.add time (item :: existing) s.schedule;
          Delay.signal s.delay;
          id
       ) in
@@ -161,10 +165,10 @@ let cancel s (time, id) =
   mutex_execute s.m
     (fun () ->
        let existing =
-         if Int64Map.mem time s.schedule
-         then Int64Map.find time s.schedule
+         if SpanMap.mem time s.schedule
+         then SpanMap.find time s.schedule
          else [] in
-       s.schedule <- Int64Map.add time (List.filter (fun i -> i.id <> id) existing) s.schedule
+       s.schedule <- SpanMap.add time (List.filter (fun i -> i.id <> id) existing) s.schedule
     )
 
 let process_expired s =
@@ -172,10 +176,10 @@ let process_expired s =
   let expired =
     mutex_execute s.m
       (fun () ->
-         let lt, eq, unexpired = Int64Map.split t s.schedule in
-         let expired = match eq with None -> lt | Some eq -> Int64Map.add t eq lt in
+         let lt, eq, unexpired = SpanMap.split t s.schedule in
+         let expired = match eq with None -> lt | Some eq -> SpanMap.add t eq lt in
          s.schedule <- unexpired;
-         expired |> Int64Map.to_seq |> Seq.map snd |> Seq.flat_map List.to_seq) in
+         expired |> SpanMap.to_seq |> Seq.map snd |> Seq.flat_map List.to_seq) in
   (* This might take a while *)
   Seq.iter
     (fun i ->
@@ -192,12 +196,13 @@ let rec main_loop s =
     mutex_execute s.m
       (fun () ->
          try
-           Int64Map.min_binding s.schedule |> fst
+           SpanMap.min_binding s.schedule |> fst
          with Not_found ->
-           Int64.add 3600L (now ())
+           let dt = Mtime.(hour_to_s *. s_to_ns |> Int64.of_float |> Span.of_uint64_ns) in
+           Mtime.Span.add dt (now ())
       ) in
-  let seconds = Int64.sub sleep_until (now ()) in
-  let (_: bool) = Delay.wait s.delay (Int64.to_float seconds) in
+  let seconds = Mtime.Span.(abs_diff sleep_until (now ()) |> to_s) in
+  let (_: bool) = Delay.wait s.delay seconds in
   if s.shutdown
   then s.thread <- None
   else main_loop s
@@ -208,7 +213,7 @@ let start s =
 
 let make () =
   let s = {
-    schedule = Int64Map.empty;
+    schedule = SpanMap.empty;
     shutdown = false;
     delay = Delay.make ();
     next_id = 0;
