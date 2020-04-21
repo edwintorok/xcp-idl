@@ -114,7 +114,6 @@ type t = {
 }
 
 type time =
-  | Absolute of int64
   | Delta of int
 
 (*type t = int64 * int [@@deriving rpc]*)
@@ -137,7 +136,6 @@ end
 
 let one_shot s time (name: string) f =
   let time = match time with
-    | Absolute x -> x
     | Delta x -> Int64.(add (of_int x) (now ())) in
   let id = mutex_execute s.m
       (fun () ->

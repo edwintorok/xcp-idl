@@ -26,12 +26,8 @@ val handle_of_rpc : Rpc.t -> handle
 (** Creates a scheduler *)
 val make : unit -> t
 
-(** Items can be scheduled at an absolute time (measured in seconds since
-    unix epoch) or as a delta measured in for seconds from now. *)
-type time = Absolute of int64 | Delta of int
-
-(** Useful for Absolutely scheduled items *)
-val now : unit -> int64
+(** Items can be scheduled as a delta measured in seconds from now. *)
+type time = Delta of int
 
 (** This module is for dumping the state of a scheduler *)
 module Dump :
