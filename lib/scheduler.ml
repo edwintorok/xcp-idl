@@ -172,18 +172,19 @@ let process_expired s =
   let expired =
     mutex_execute s.m
       (fun () ->
-         let expired, unexpired = Int64Map.partition (fun t' _ -> t' <= t) s.schedule in
+         let lt, eq, unexpired = Int64Map.split t s.schedule in
+         let expired = match eq with None -> lt | Some eq -> Int64Map.add t eq lt in
          s.schedule <- unexpired;
-         Int64Map.fold (fun _ stuff acc -> acc @ stuff) expired [] |> List.rev) in
+         expired |> Int64Map.to_seq |> Seq.map snd |> Seq.flat_map List.to_seq) in
   (* This might take a while *)
-  List.iter
+  Seq.iter
     (fun i ->
        try
          i.fn ()
        with e ->
          debug "Scheduler ignoring exception: %s\n%!" (Printexc.to_string e)
     ) expired;
-  expired <> [] (* true if work was done *)
+  expired () <> Seq.Nil (* true if work was done *)
 
 let rec main_loop s =
   while process_expired s do () done;
